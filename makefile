@@ -14,7 +14,7 @@ CFLAGS = `pkg-config --cflags gtk+-3.0` \
  -I../plib -I. $(BUG) -fPIC
 LFLAGS = -L../plib `pkg-config --libs gtk+-3.0` -rdynamic -lplib -lcurl -ljson-c -licuuc -licudata -licui18n -llz4
 
-OBJFILES = $(TARGET).o $(TARGET)c.o
+OBJFILES = $(TARGET).o $(TARGET)c.o $(TARGET)x.o
 
 $(TARGET): $(OBJFILES)
 	@$(COMP) -o $@ $(OBJFILES) $(LFLAGS)

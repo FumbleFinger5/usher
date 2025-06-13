@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Generated with glade 3.38.2 -->
+<!-- Generated with glade 3.40.0 -->
 <interface>
   <requires lib="gtk+" version="3.24"/>
   <object class="GtkAdjustment" id="GWadj">
@@ -26,7 +26,6 @@
             <property name="height-request">36</property>
             <property name="visible">True</property>
             <property name="can-focus">True</property>
-            <signal name="changed" handler="on_GWinum_changed" swapped="no"/>
           </object>
           <packing>
             <property name="x">36</property>
@@ -34,7 +33,7 @@
           </packing>
         </child>
         <child>
-          <object class="GtkLabel" id="GWlabel">
+          <object class="GtkLabel" id="GWSearchText">
             <property name="width-request">237</property>
             <property name="height-request">36</property>
             <property name="visible">True</property>
@@ -68,7 +67,23 @@
                 <signal name="clicked" handler="on_GWok_clicked" swapped="no"/>
               </object>
               <packing>
-                <property name="x">108</property>
+                <property name="x">166</property>
+                <property name="y">50</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkCheckButton" id="GWtags">
+                <property name="label" translatable="yes">Tag Update</property>
+                <property name="width-request">43</property>
+                <property name="height-request">40</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="receives-default">False</property>
+                <property name="draw-indicator">True</property>
+                <signal name="toggled" handler="on_GWtags_toggled" swapped="no"/>
+              </object>
+              <packing>
+                <property name="x">-8</property>
                 <property name="y">50</property>
               </packing>
             </child>
@@ -98,6 +113,7 @@
             <property name="height-request">35</property>
             <property name="visible">True</property>
             <property name="can-focus">False</property>
+            <property name="selectable">True</property>
           </object>
           <packing>
             <property name="x">219</property>
@@ -106,18 +122,18 @@
         </child>
         <child>
           <object class="GtkSpinButton" id="GWPartWatched">
-            <property name="width-request">40</property>
-            <property name="height-request">18</property>
+            <property name="width-request">82</property>
+            <property name="height-request">40</property>
             <property name="visible">True</property>
             <property name="can-focus">True</property>
-            <property name="margin-top">15</property>
+            <property name="margin-top">5</property>
             <property name="adjustment">GWadj2</property>
             <property name="climb-rate">1</property>
             <property name="numeric">True</property>
           </object>
           <packing>
-            <property name="x">110</property>
-            <property name="y">270</property>
+            <property name="x">115</property>
+            <property name="y">276</property>
           </packing>
         </child>
         <child>
@@ -134,12 +150,12 @@
           </packing>
         </child>
         <child>
-          <object class="GtkButton" id="GWcopy">
+          <object class="GtkButton" id="GWSearch">
             <property name="visible">True</property>
             <property name="can-focus">True</property>
             <property name="receives-default">True</property>
             <property name="tooltip-text" translatable="yes">Copy to clipboard and run Google search</property>
-            <signal name="clicked" handler="on_GWcopy_clicked" swapped="no"/>
+            <signal name="clicked" handler="on_GWSearch_clicked" swapped="no"/>
             <child>
               <placeholder/>
             </child>
@@ -155,6 +171,7 @@
             <property name="height-request">36</property>
             <property name="visible">True</property>
             <property name="can-focus">True</property>
+            <property name="placeholder-text" translatable="yes">Override movie name (NOT including Year)</property>
           </object>
           <packing>
             <property name="x">36</property>

@@ -10,6 +10,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <utime.h>
+#include <cassert>
+#include <cstdarg>
 
 #include "pdef.h"
 #include "cal.h"
@@ -26,15 +28,11 @@
 #include "imdbf.h"
 #include "exec.h"
 #include "scan.h"
-#include <cstdarg>
 #include "qblob.h"
 #include "my_json.h"
 #include "tmdbc.h"
 
 #include "usher.h"
-
-char *fmt_name_year(char *s, OMZ *oz);	// (in usher.cpp)
-bool api_name_from_number(OMZ *zz);
 
 void crash(const char *fmt,...)	// pop up a YAD notification using formatted string as TITLE
 {
@@ -48,41 +46,19 @@ exec_cmd(strfmt(cmd,"notify-send -u critical %c%s%c",CHR_QTDOUBLE,ss,CHR_QTDOUBL
 throw(99);
 }
 
-// Sort DIRTBL elements by filename. If renaming would have 'lost' duplicate OUTPUT filenames,
-// they can be be preserved by appending cd2, cd3,...
-int _cdecl cp_fi(const void *a, const void *b)
-{return(strcmp(((const FILEINFO*)a)->name,((const FILEINFO*)b)->name));}
-
-DIRTBL::DIRTBL(const char *pth):DYNAG(sizeof(FILEINFO))
-{
-DIRSCAN ds(pth);
-FILEINFO fi;
-struct dirent *entry;
-while ((entry=ds.next(&fi))!=NULLPTR)
-	{
-//	if ((entry->d_type&DT_DIR)!=0) continue;
-	strcpy(fi.name,entry->d_name);  // Make it JUST filename - not FULLPATH, as returned by ds.next()
-//if (!fn_cdx(fi.name))	// Don't store "....cd2 / cd3" files (of ANY type)
-   DYNAG::put(&fi);
-	}
-qsort(get(0),ct,sizeof(FILEINFO),cp_fi);		// Assume this puts cd1, cd2, cd3,... in the right sequence
-}
-
-
-static char *delete_square_bracket_text(char *n)
+static char *delete_junk_in_foldername(char *n)
 {
 char *p=strchr(n,'['), *q;
 if (p!=NULL && (q=strchr(p,']'))!=NULL)
 	strdel(p,q-p+1);
-const char *unwanted_prefix[] = {"www.Torrenting.com", "www.torrenting.org", NULL};
 int i,j;
-for (i=0;unwanted_prefix[i];i++)
-	if (!strncasecmp(n,unwanted_prefix[i],j=strlen(unwanted_prefix[i])))
-	{
-		Sjhlog("delete prefix: %s",n);
-		strdel(n,j);
-	}
+if (SAME4BYTES(n,"www.") && (i=stridxc(SPACE,n))!=NOTFND)
+   strdel(n,i);
 while (*n==SPACE || *n=='-') strdel(n,1);
+
+//while ((i=stridxc(SPACE,n))!=NOTFND) strins(strdel(&n[i],1),"%20");	// 10/6/25
+//while ((i=stridxc(CHR_QTSINGLE,n))!=NOTFND) strins(strdel(&n[i],1),"%27");	// 10/6/25
+
 return(n);
 }
 
@@ -102,56 +78,66 @@ if (cb>4 && valid_year1(&p[cb-4],oz)) return(true);
 return(false);
 }
 
+/*static void my_strancpy(OMZ *oz, char *src, int len)
+{
+char wrk[128];
+int i;
+strancpy(wrk,src,len);
+while ((i=stridxc('%',wrk))!=NOTFND)		// convert any %HH hex values to single chars
+	{
+	int asc=x2l(&wrk[i+1],2);
+	*strdel(&wrk[i],2) = asc;
+	}
+strancpy(oz->title,wrk,sizeof(oz->title));	// ensure we don't care if title size is changed!
+}*/
 
-int moviename_in_foldername(char *fn, OMZ *oz)
+// TODO - just add eos nullbyte before (year) in passed buff and return true (caller can check for '/' or ':' ) 
+static int moviename_in_foldername(char *fn, OMZ *oz)
 {
 int i=strlen(fn)-7, j;
 if ((j=stridxc('(',fn))!=NOTFND && valid_year(&fn[j], oz))
 	{strancpy(oz->title,fn,j); return(YES);}
 if (i<0) return(NO);		// (just in case it's a very short folder name)
-for(i=j=0; (i=stridxc('.',&fn[j]))!=NOTFND && i<sizeof(oz->title)-5; j+=(i+1))
-	{
-	if (valid_year1(&fn[j+i+1], oz) && (fn[j+i+5]=='.' || !fn[j+i+5]))
-		{strancpy(oz->title,fn,j+i+1); return(YES);}
-	}
+char sep[3]={'.',SPACE,0}, cc;
+for (int cs=0; (cc=sep[cs])!=0; cs++)
+   for(i=j=0; (i=stridxc(cc,&fn[j]))!=NOTFND && i<sizeof(oz->title)-5; j+=(i+1))
+	   {
+	   if (valid_year1(&fn[j+i+1], oz) && (fn[j+i+5]==cc || !fn[j+i+5]))
+		   {strancpy(oz->title,fn,j+i+1); return(YES);}
+   	}
 return(NO);
 }
 
-
-class APOSTROPHIZER {			// A class to dynamically allocate space for any number
-public:
+class APOSTROPHIZER {				// Initialized with ORIGINAL title (MovieFolderNanme), which get() returns FIRST
+public:									// subsequent get() calls return all possibly missing apostrophe version 
 APOSTROPHIZER(const char *_ttl);
 const char *get(void);
 char	*fiddle(char *moviename);
-//~APOSTROPHIZER();			// nothing for destructor to do!
 private:
 char ttl[80];
 int	again, prv_added;
 bool apostrophe_already_present;
 };
 
-// this fn REPLICATED in q3:window for user-not-steve Rating changes  // NOT ANY MORE!!! (JAN 2024)
 char* APOSTROPHIZER::fiddle(char *mn)		// Fiddle with passed movie name to get round CLI and API quirks
 {
 strxlt(mn,SPACE,'+');
-char *p, ins[5]={TAB,BACKSLASH,TAB,TAB,0};	// Allow for MULTIPLE single QT1 marks, so TEMPORARILY
-															// use TABs (that can all be xlt'd to QT1's in one fell swoop)
-while ((p=strchr(mn,CHR_QTSINGLE))!=NULL) strins(strdel(p,1),ins);
-strxlt(mn,TAB,CHR_QTSINGLE);
-char ins3[6]={'%','2','6',0};
-while ((p=strchr(mn,AMPERSAND))!=NULL) strins(strdel(p,1),ins3);
+char *p;
+while ((p=strchr(mn,CHR_QTSINGLE))!=NULL) strins(strdel(p,1),"%27");
+while ((p=strchr(mn,AMPERSAND))!=NULL) strins(strdel(p,1),"%26");
 return(mn);
 }
 
 APOSTROPHIZER::APOSTROPHIZER(const char *_ttl)
 {
-fiddle(strcpy(ttl,_ttl));
+strcpy(ttl,_ttl);
+apostrophe_already_present=(stridxc(CHR_QTSINGLE,_ttl)!=NOTFND);
+//fiddle(ttl);
 again=prv_added=0;
-apostrophe_already_present=(stridxc(CHR_QTSINGLE,ttl)!=NOTFND);
 }
 
 // Return offset of last letter of first word ending in 's' in passed string
-// Caller adds previously-returned offset to passed address, so it's effectively NEXT apostrophizable word
+// Caller adds previously-returned offset to passed address, so it's effectively NEXT Apostrophizable word
 static int apostrophizable(const char *p)
 {
 int letters_stepped_over=0, i, c;
@@ -182,39 +168,26 @@ if (again++)
 return(ttl);
 }
 
-
-static void retrieve_api_title(OMZ *zz, char *buf)
-{
-if (!*zz->title)
-	{
-	JBLOB_READER jb(buf);
-	char *str=jb.get("Title");
-	strncpy(zz->title,fix_colon(str),sizeof(zz->title));
-//sjhlog("retrieve_api_title I%d [%s] %d",zz->k.imno,zz->title,zz->year);
-	}
-}
-
-
-// Call API with title+Year to get ImdbNo
+// Call API with tItle+Year to get ImdbNo
 static int api_number_from_name(const char *fn, OMZ *omz)	// oz, not e (param)
 {
-char fixfn[256];
-delete_square_bracket_text(strcpy(fixfn,fn));
+char fixfn[256], buf8k[8192];
+delete_junk_in_foldername(strcpy(fixfn,fn));
 if (moviename_in_foldername(fixfn,omz))
 	{
 	const char *ttl;
 	APOSTROPHIZER ap(omz->title);
 	while ((ttl=ap.get())!=NULLPTR)
-		{
-		char *p, buf8k[8192];
-		if (api_all_from_name(ttl, omz->year, buf8k) && *(p=strquote(buf8k,"imdbID"))!=0
-		    && SAME2BYTES(p,"tt") && (omz->k.imno=a2l(&p[2],0))!=0)
+		if (omdb_all_from_name(ttl, omz->year, buf8k))
 			{
-			*omz->title=0;	// so next line will copy definitive MovieName into omz
-			retrieve_api_title(omz,buf8k);	// omz.Year not updated, 'cos it MUST be correct in order for lookup to work!
-	    	return(omz->k.imno);
+			JBLOB_READER jb(buf8k);
+			const char *p=jb.get("imdbID");
+			if (SAME2BYTES(p,"tt") && (omz->k.imno=a2l(&p[2],0))!=0)
+				{
+				retrieve_api_title(omz,buf8k);
+    			return(omz->k.imno);
+				}
 			}
-		}
 	}
 return(omz->k.imno=0);	// zeroise in case we put (invalid) value in there above
 }
@@ -223,13 +196,13 @@ int32_t MVDIR::read_nfo(const char *fn)
 {
 char s[512];
 int i, len, num=0;
-HDL f=flopen(strfmt(s,"%s/%s",path,fn),"r");
+HDL f=flopen(strfmt(s,"%s/%s",Path,fn),"r");
 while (num==0 && (len=flgetln(s,sizeof(s)-1,f))>=0)   // Look for   <uniqueid type="imdb">2788716</uniqueid>
     {
     if ((i=stridxs("<uniqueid type=",s))!=NOTFND && s[i+15]==34
     &&  SAME4BYTES(&s[i+16],"imdb") && s[i+20]==34 && s[i+21]=='>')
         num=a2l(&s[i+22],0);
-    else if ((i=stridxs("www.imdb.com/title/tt",s))!=NOTFND)
+    else if ((i=stridxs("www.imdb.com/title/tt",s))!=NOTFND)   // *.URL contains ptr->imdb movie webpage
         {num=a2l(&s[i+21],0);}
     }
 flclose(f);
@@ -246,21 +219,22 @@ return(num);			// could be 0 if this *.nfo format doesn't contain imdbNo
 // IF *.nfo exists (max 1 such file)
 //     if _ttNNNNN also exists, AND Ino specified in *.nfo, the numbers must match
 // IF multiple *.srt files exist, only consider the latest-dated one
-MVDIR::MVDIR(char *pth)		// MVDIR constructor
+MVDIR::MVDIR(const char *pth)		// MVDIR constructor
 {
-if (pth==NULL || strlen(pth)>=sizeof(path)) crash("Movie folder path invalid or missing");
-strcpy(path,pth);
-dt = new DIRTBL(path);
-foldername=(char*)strrchr(path,'/')+1;		// point to final folder in passed path
+if (pth==NULL || strlen(pth)>=sizeof(Path)) crash("Movie folder path invalid or missing");
+strcpy(Path,pth);
+dt = new DIRTBL(Path);
+Foldername=(char*)strrchr(Path,'/')+1;		// point to final folder in passed path
 memset(&omz,0,sizeof(OMZ));
 biggest_vid_sz=0;
+tooltip_text=NULL;
 int i, num;
 FILEINFO *fi;
 char *fn;
 for (fi=(FILEINFO*)dt->get(i=0);i++ < dt->ct;fi++)
 	{
 	fn=fi->name;
-	if ((fi->attr&DT_DIR)!=0)	// is it a directory?
+	if ((fi->attr&DT_DIR)!=0)	// must be folder, not file
 		{
 		if (fn[0]=='_' && (num=dot2i(&fn[1]))!=NOTFND)
 			{
@@ -281,37 +255,37 @@ for (fi=(FILEINFO*)dt->get(i=0);i++ < dt->ct;fi++)
 		if (num!=omz.k.imno) m_finish("Conflicting _tt / *.nfo files");
 		}
 	if (fi->size>biggest_vid_sz && drisvid(drext(fn)))
-		biggest_vid_sz=fi->size;
+		{biggest_vid_sz=fi->size; MOVE4BYTES(vidext,drext(fn)); strcpy(biggest_vid_fn,fn);}
 	}
 if (biggest_vid_sz==0) crash("No video files");
 if (omz.k.imno==0)
 	{
-	api_number_from_name(foldername,&omz);		// TRUE api got match for movie name+year from dirnam
+	api_number_from_name(Foldername,&omz);		// TRUE api got match for movie name+year from dirnam
 	api_name_from_number(&omz);
 	inp_state=1;
 	return;
 	}
 api_name_from_number(&omz);
-inp_state=(rename(false)?2:3);
+if (rename(false)) inp_state=2;     // 2 = User needs to confirm renaming
+else inp_state=3;                   // 3 = Renaming not required - we're now asking for UserRating
 }
 
 MVDIR::~MVDIR()
 {
 memtake(tooltip_text);
-strquote(0,0);
 delete dt;
 }
 
 
 
 
-static void update_api_api(OMZ *k)	// Update imdb.api (ImdbNo record contains ENTIRE text returned by API) 
+static void update_api_api(OMZ *k)	// Update imdb.Api (ImdbNo record contains ENTIRE text returned by API) 
 {												// k points to private oK within MV
 IMDB_API ia;
 if (ia.get(k->k.imno,0)==NULL)
 	{
 	char buf8k[8192];    // Allow PLENTY of space for the ENTIRE ibmdb API call
-	tmdb_all_from_number(k,buf8k);
+	if (!tmdb_all_from_number(k,buf8k)) crash("update_api_api failed! imno:%d",k->k.imno);
 	ia.put(k->k.imno,buf8k);
 	}
 }
@@ -319,7 +293,6 @@ static void update_api_dbf(int32_t imno)	// Update imdb.dbf (optimised storage f
 {
 IMDB_FLD imf;
 if (imf.exists(imno)) return;					// sjhLog("tt%d shouldn't exist",imno); 
-char buf[8192];    // Allow PLENTY of space for the ENTIRE imdb API call
 IMDB_API ia;
 const char *ptr=ia.get(imno,0);
 if (ptr==NULL) m_finish("Impossible!");		// Should have just Added IA.rec if not already present
@@ -328,26 +301,22 @@ imf.put(imno,ptr);
 
 static int32_t update_now;		// Set when Put_rating() starts to ensure exactly constant value
 
-static void align_watch_history_mst(int32_t imno, OM1_KEY *k)	// Ensure smdb.mst correctly reflects this imno+partwatch pair
-{
-USRTXT ut(imno);
-DYNAG *d=ut.extract("prv");	// get table of all existing {prv=...} subrecs in notes 
-char w[32];
-if (k->rating!=0 && ((short_bd(update_now) - short_bd(k->seen)))>31)	// best (no dup of CURRENT NEW rating)
-	d->in_or_add(strendfmt(calfmt(w,"%3.3M %4C",k->seen)," %1.1f",0.1*k->rating));
-ut.insert(d);
-delete d;
-}
-
-static void watch_history_update(const char *pfn, int32_t imno)
+static void watch_history_update(int32_t imno)
 {
 OMDB1 om1(true);
 OM1_KEY k;
 if (!om1.get_om1(imno,&k)) m_finish("wtf1");
-align_watch_history_mst(imno, &k);
+// Ensure smdb.mst correctly reflects this imno+partwatch pair
+USRTXT ut(imno);
+DYNAG *d=ut.extract("prv");	// get table of all existing {prv=...} subrecs in notes 
+char w[32];
+if (k.rating!=0 && ((short_bd(update_now) - short_bd(k.seen)))>31)	// best (no dup of CURRENT NEW rating)
+	d->in_or_add(strendfmt(calfmt(w,"%3.3M %4C",k.seen)," %1.1f",0.1*k.rating));
+ut.insert(d);
+delete d;
 }
 
-// this is the only place where a new record is ADDED to smdb.mst
+// this is the ONLY place where a new record is ADDED to smdb.mst
 void MVDIR::update_om2(bool setting_rating)	// could pass/populate optional non-null WATCHED ptr before overwriting
 {
 OMDB1 om1(true);
@@ -360,30 +329,34 @@ if (!om1.get_om1(k.imno=omz.k.imno,&k))
 	if (wh.sseen) {k.added=short_bd(k.seen=wh.sseen); k.rating=wh.rating;}
 	else k.added=short_bd(update_now);
 	const char *inam=ia.get(k.imno,get_fld_name(FID_TITLE));
-	if (inam && *inam && !same_alnum(inam,omz.title))
+//	if (inam && *inam && !same_alnum(inam,omz.title))
+	if (inam && *inam && strcmp(inam,omz.title)!=0)
 		{k.mytitle=om1.str2rh(omz.title);}
 	k.partwatch=omz.k.partwatch;
 	k.tmno=omz.k.tmno;
 	k.tv=omz.k.tv;
 	om1.put(&k);
 	}
+   {RECENT recent; recent.put(k.imno);}
 if (!setting_rating || !omz.k.rating) return;
 k.partwatch=omz.k.partwatch;
 om1.put_rating(k.imno,omz.k.rating, &k); 
-RECENT recent;
-recent.put(k.imno);
 #ifdef KEEP_TMDB_SYNCHED		// maintain TMdb online ratings in real time
-if (!tmdb_update_rating(authenticate, k.tmno, k.imno, k.tv, 0,0, k.rating))
+if (!tmdb_set_rating(authenticate, k.tmno, k.imno, k.tv, 0,0, k.rating))
 	sjhlog("Error setting tmdb rating:%d on I:%d",k.imno);
 #endif
 }
 
 
+void update_api_both(OMZ *omz)      // update both imdb.api (all api results) AND imdb.fld (fast-load compressed version)
+{
+update_api_api(omz);
+update_api_dbf(omz->k.imno);
+}
 
 void MVDIR::update_imdb(bool setting_rating)
 {
-update_api_api(&omz);	// pass &oK to have TMdb+tv set
-update_api_dbf(omz.k.imno);
+update_api_both(&omz);
 update_om2(setting_rating);	// UniqCall. set_watch_history=FALSE when adding NEW movie
 }
 
@@ -394,58 +367,64 @@ static void write_tt_file(const char *folder, OMZ *omz)
 char fn[FNAMSIZ];
 HDL f=flopen(strfmt(fn,"%s/_tt%d", folder, omz->k.imno),"w");
 if (f==NULL) crash("Can't write %s (read-only access?)",fn);
-if (omz->k.mytitle)				// If non-zero it's the rhdl of user-override title to store in _ttNNNNN
+if (omz->k.mytitle)				// If non-zero it's the rhdl of user-override tItle to store in _ttNNNNN
 	{
-	fmt_name_year(fn,omz);		// Don't write actual title unless it's different to imdb name from api
+	fmt_name_year(fn,omz);		// Don't write actual tItle unless it's different to imdb name from api
 	flputln(fn,f);
 	}
 flclose(f);
 }
 
-
-// Rename fully-qualified file or folder. Return YES if successful, else NO (fatal error?)
-static bool exec_rename(char *from, char *to)
+char* MVDIR::prvname(const char *fn)
 {
-char cmd[512], buf[256];
-strfmt(cmd,"%s %c%s%c %c%s%c", "mv", CHR_QTDOUBLE,from,CHR_QTDOUBLE, CHR_QTDOUBLE,to,CHR_QTDOUBLE);
-int err=exec_cmd(cmd,buf,sizeof(buf));
-if (err) crash("Error renaming %s to %s",from,to);
-return(!err);
+static char *saved_prvname=NULL;
+if (fn==NULL)
+   return(saved_prvname);
+char prvname[FNAMSIZ];
+strancpy(prvname,fn,strlen(fn)-4+1);      // +1 for EOS
+if (strcmp(Basename(Path),prvname))
+   {
+   strins(prvname,"/");
+   strins(prvname,Basename(Path));
+   }
+saved_prvname=stradup(prvname);
+return(0);  // not interested in return value here
 }
-
 
 bool MVDIR::rename_file(const char *fn, bool do_it)	// Rename avi / srt / nfo FILE in 'Dt' to match preferred MovieName
 {
 int len=strlen(fn)-4;
-if (len==strlen(omz.title) && !strncmp(omz.title,fn,len)) return(false);	// No need to Rename
+if (len==strlen(omz.title) && !strncmp(omz.title,fn,len))   // 26/10/24 if there's no need to rename...
+   return(do_it);    // ...returns FALSE for "Rename needed?" TRUE for "Rename done!" (maybe earlier)
 if (do_it)
 	{
 	char from[FNAMSIZ], to[FNAMSIZ];
-	strfmt(from,"%s/%s",path,fn);
+   static bool again=false;
+   if (!again && drisvid(drext(fn)))
+      {/*MOVE4BYTES(vidext,drext(fn));*/ prvname(fn); again=true;}
+	strfmt(from,"%s/%s",Path,fn);
 	int cd=0;		// default assumption is there's only going to be ONE video file
 	do	{
 		char cdnum[8]; strfmt(cdnum," cd%d",++cd);
-		strfmt(to,"%s/%s%s%s",path,omz.title,(cd<2)?"":cdnum,drext(fn));
+		strfmt(to,"%s/%s%s%s",Path,omz.title,(cd<2)?"":cdnum,drext(fn));
 		} while (drattrget(to, NULL));
 	exec_rename(from,to);
 	}
-return(true);
+return(true);		// We WILL (or DID) rename this file
 }
-
 
 bool MVDIR::rename_folder(bool do_it)	// Rename Movie FOLDER to match preferred MovieName + (YEAR)
 {
 char fn[FNAMSIZ], to[FNAMSIZ];
-if (!strcmp(foldername, fmt_name_year(fn,&omz))) return(do_it);	// No need to Rename
+if (!strcmp(Foldername, fmt_name_year(fn,&omz)))   // 26/10/24 if there's no need to rename...
+   return(do_it);	// ...returns FALSE for "Rename needed?" TRUE for "Rename done!" (maybe earlier)
 if (do_it)
 	{
-	strcpy(&strcpy(to,path)[foldername-path], fn);
-	//int p;
-	//while ((p=stridxs("&amp;",to))!=NOTFND) *strdel(&to[p],4)='&';
-	exec_rename((char*)path,to);
-	foldername=(char*)strrchr(strcpy(path,to),'/')+1;		// point to final folder in passed path
+	strcpy(&strcpy(to,Path)[Foldername-Path], fn);
+	exec_rename((char*)Path,to);
+	Foldername=(char*)strrchr(strcpy(Path,to),'/')+1;		// point to final folder in path
 	}
-return(true);
+return(true);		// We WILL (or DID) rename the folder
 }
 
 bool MVDIR::omdb1_rec_exists(bool do_it)
@@ -472,9 +451,9 @@ for (int i=0;i<dt->ct;i++)
 	{
 	FILEINFO *fi=(FILEINFO*)dt->get(i);
 	char fn[FNAMSIZ];
-	if (unwanted_filename(fi->name))
+	if (megabytes(fi->size)<75 && unwanted_filename(fi->name))
 		{
-		if (unlink(strfmt(fn,"%s/%s",path,fi->name))) Sjhlog("Error deleting %s",fn);
+		if (unlink(strfmt(fn,"%s/%s",Path,fi->name))) Sjhlog("Error deleting %s",fn);
 		else dt->del(i--);
 		}
 	}
@@ -494,6 +473,76 @@ for (int i=0; i<dt->ct; i++)
 return(true);	// Didn't find a later *.srt file, so this is the one to be renamed
 }
 
+static char *mytrim(char *s)
+{
+int len;
+while ((len=strlen(s))>1 && s[len-1]<=SPACE) s[len-1]=0;
+return(s);
+}
+
+static bool title_tag_matches(const char *fnam, const char *title)
+{
+char cmd[512], buf[256];
+strcpy(cmd,"ffprobe -v error -show_entries format_tags=title -of default=noprint_wrappers=1:nokey=1");
+strendfmt(cmd," \"%s\"",fnam);
+int err=exec_cmd(cmd,buf,sizeof(buf));
+mytrim(buf);
+return(err==0 && strcmp(buf,title)==0);      // true if tag matches, else false
+}
+
+bool MVDIR::tag_present(void)
+{
+char fnam[256];
+strfmt(fnam,"%s/%s",Path,biggest_vid_fn);
+char title[80];
+strfmt(title,"%s (%d)",omz.title,omz.year);
+return(title_tag_matches(fnam,title));
+}
+
+bool MVDIR::update_tags(void)
+{
+int pass=0;   // pass:0 check existing file for tags, pass:1 basic addtag, pass:2 aggressive addtag
+char cmd[512], *_prvnam;
+char buf8k[8192];
+char rvf[128];       // (probably) rvf = "renamed video file"
+strfmt(rvf,"%s%4.4s",omz.title,vidext);
+const char *fnam=rvf;
+const char *basen=strrchr(Path,'/')+1; // Just the name of parent (moviename+year), not fullpath
+set_cursor(true);
+assert(chdir(Path)==0);
+_prvnam=prvname(NULL);
+while (!title_tag_matches(fnam,basen) && ++pass<=2)
+   {
+   strcpy(cmd,"ffmpeg -y");        // 11/1/25 - ffmpeg needs "file:" before filename if it contains a semicolon
+   if (pass==2) strcat(cmd," -fflags +genpts");
+#ifdef pre23_5_25
+   strendfmt(cmd," -i \"file:%s\" -codec copy -metadata title=\"%s\"",rvf,basen);
+   if (_prvnam!=NULL) strendfmt(cmd," -metadata publisher=\"%s\"",_prvnam);
+#else
+// Update avoids trying to copy subtitle streams, in case they're "unrecognised format".
+// BUT maybe should just insert   -map 0:v:0 -map 0:a:0  into previous (keeping double quotes and "file:" component)
+   strendfmt(cmd," -i \"%s\" -codec copy  -map 0:v:0 -map 0:a:0  -metadata title=\"%s\"",rvf,basen);
+   if (_prvnam!=NULL) strendfmt(cmd," -metadata publisher=\"%s\"",_prvnam);
+#endif
+   strendfmt(cmd," \"%s\"",fnam="temp.mkv");
+   int err=exec_cmd_wait(cmd);      // 7/2/25  make sure ffmpeg finished!
+   if (err!=0)
+      crash("Tagging command failed:\n%s",cmd);
+   }
+if (pass>0 && pass<=2)    // then we did create temp.mkv containing the required tags
+   {
+   char to[256];
+   strfmt(to,"ORG_%s",rvf);
+   exec_rename(rvf,to);
+   if (!SAME4BYTES(drext(rvf),".mkv"))
+      MOVE4BYTES(&rvf[strlen(rvf)-4],".mkv");
+   exec_rename("temp.mkv", rvf);
+   }
+memtake(_prvnam);
+set_cursor(false);
+return(true);
+}
+
 // do_it=FALSE when called from constructor (does anything need to be done?), TRUE when called by app code
 bool MVDIR::rename(bool do_it)
 {
@@ -504,28 +553,30 @@ if (do_it) rarbg_del();				// delete dross torrent files (and remove from DIRTBL
 for (int i=0;i<dt->ct;i++)
 	{
 	FILEINFO *fi=(FILEINFO*)dt->get(i);
-	int megabytes=(fi->size >> 20);
 	const char *fn = fi->name;
 	if (SAME3BYTES(fn,"_tt")) tt_exists=true;
 	const char *ext=drext(fn);
 	if (do_it && SAME4BYTES(ext,".srt") && !latest_srt(dt,i)) continue;
-	if ((drisvid(ext) && megabytes>300) || stridxs(ext, ".srt.jpg.nfo")!=NOTFND)
+   if (SAME4BYTES(fn,"ORG_")) continue;      // Don't rename this one again - it's ALREADY renamed!
+	if ((drisvid(ext) && megabytes(fi->size)>300) || stridxs(ext, ".srt.jpg.nfo")!=NOTFND)
 		if (rename_file(fn,do_it) && !do_it) return(true);	// No need to continue if even ONE Rename needed
 	}
 if (!tt_exists)
 	{
 	if (!do_it) return(true);		// adding missing _tt file counts as "renaming"
-	write_tt_file(path,&omz);
+	write_tt_file(Path,&omz);
 	}
-rename_folder(do_it);		// If FOLDER is renamed, 'path' and 'foldername' are adjusted accordingly
-return(true);
+bool rf=rename_folder(do_it);		// If FOLDER is renamed, 'path' and 'foldername' are adjusted accordingly
+if (do_it && update_tags_do_it)
+   rf=update_tags();
+return(rf);
 }
 
-static void align_partwatch_on_disc(const char *path, char partwatch)
+static void align_partwatch_on_disc(const char *pth, char partwatch)
 {
 bool unchanged=NO;
 int i;
-DIRSCAN ds(path, "watched*");
+DIRSCAN ds(pth, "watched*");
 FILEINFO fi;
 struct dirent *entry;
 DYNAG d(sizeof(FILEINFO));  // Store FULLPATH as returned by ds.next(), not just filename in fi
@@ -544,7 +595,7 @@ while ((entry=ds.next(&fi))!=NULLPTR)
 	}
 if (unchanged || (d.ct==0 && partwatch==0)) return;
 char from[FNAMSIZ], to[FNAMSIZ];
-strfmt(to,"%s/watched 0.%c",path,partwatch+'0');
+strfmt(to,"%s/watched 0.%c",pth,partwatch+'0');
 if (d.ct)
     {
     memmove(&fi,d.get(0),sizeof(FILEINFO));
@@ -582,18 +633,18 @@ if (update_now==0) update_now=calnow();
 OM1_KEY k;
 char prv=wh.rating;
 char	fn[256], old_fn[256];
-strfmt(fn,"%s/_%1.1f",path, 0.1 * omz.k.rating);   // The FULL name of required (NEW) Rating folder
+strfmt(fn,"%s/_%1.1f",Path, 0.1 * omz.k.rating);   // The FULL name of required (NEW) Rating folder
 if (prv<=0)	// no existing rating folder, so make new one
 	{ if (mkdir(fn, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) !=0) crash("Error writing %s Rating folder",fn); }
 else			// change dttm of existing folder
 	{
-	if (prv!=omz.k.rating) exec_rename(strfmt(old_fn,"%s/_%1.1f",path, 0.1 * prv), fn);
+	if (prv!=omz.k.rating) exec_rename(strfmt(old_fn,"%s/_%1.1f",Path, 0.1 * prv), fn);
 	utime(fn,NULL);	// after possible Rename, set DateLastModified to 'now'
 	}
 partwatch_update(fn,&omz.k);		// Add, Rename, or delete "watched 0.n" in dbf AND rating folder
 if (prv!=omz.k.rating || ((short_bd(update_now) - short_bd(omz.k.seen)))>31)
 	omz.k.seen=update_now;		// only update 'seen' if > 1 nmonth since last rating, OR changed rating value
-watch_history_update(fn,omz.k.imno);
+watch_history_update(omz.k.imno);
 update_imdb(true);				// This call updates RATING for movie in old OmDB.dbf and new imdb.dbf
 }
 
@@ -614,22 +665,38 @@ else strcpy(buf,"no prv");
 return(buf);
 }
 
+static void single_shot_tooltip(OMZ *omz, char *buf8k)
+{
+static int32_t prv=0;
+if (prv==omz->k.imno) return;
+OMZ _omz;                        // kludge to prevent tmdb_all_from_number() from updating what shoud be "const" omz
+memcpy(&_omz,omz,sizeof(OMZ));    // (I think the only possible update is if the api call ends up assigning to tmdb:TV)
+prv=_omz.k.imno=omz->k.imno;
+if (!tmdb_all_from_number(omz, buf8k)) return;
+JBLOB_READER jb(buf8k);
+const char *p;
+if ((p=jb.get("Director"))!=0) strfmt(buf8k,"Director: %s",p);
+if ((p=jb.get("Actors"))!=0) strendfmt(buf8k,"\n%s",p);
+if ((p=jb.get("plot"))!=0) strendfmt(buf8k,"\n\n%s",p);
+}
+
 char* MVDIR::get_tooltip_text(void)
 {
-if (tooltip_text==0) // tooltip_text=(char*)memgive(100);
+if (tooltip_text==NULL) // pointer initially NULL - not updated UNLESS valid imno leads to valid movie details
 	{
-	char buf2k[2048]; // Allow PLENTY of space for the text
-	*buf2k=0;
+	char buf8k[8096]; // Allow PLENTY of space for the text
+	*buf8k=0;
 	if (omz.k.imno)
 		{
-		IMDB_API ia;
-		const char *p;
-		if ((p=ia.get(omz.k.imno,"Director"))!=0) strfmt(buf2k,"Directed by %s",p);
-		if ((p=ia.get(omz.k.imno,"Actors"))!=0) strendfmt(buf2k,"\n%s",p);
-		if ((p=ia.get(omz.k.imno,"plot"))!=0) strendfmt(buf2k,"\n\n%s",p);
+		IMDB_API ia;      // TODO - get EVERYTHING from ia into buf8k. IF we got nothing (new imno not yet in system) THEN...
+		const char *p;    // ...call actual api's in single_shot_tooltip, and share code below for formatting tooltip text
+		if ((p=ia.get(omz.k.imno,"Director"))!=0 && *p) strfmt(buf8k,"Directed by %s",p);
+		if ((p=ia.get(omz.k.imno,"Actors"))!=0 && *p) strendfmt(buf8k,"\n%s",p);
+		if ((p=ia.get(omz.k.imno,"plot"))!=0 && *p) strendfmt(buf8k,"\n\n%s",p);
+      if (buf8k[0]==0) single_shot_tooltip(&omz,buf8k);
+      if (*buf8k) return tooltip_text=stradup(buf8k);
 		}
-	tooltip_text=stradup(buf2k);
 	}
-return(tooltip_text);
+return(NULL);
 }
 
