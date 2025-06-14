@@ -631,7 +631,7 @@ switch (subx)
    case 'b': err=backup(); break;
    case 'd': err=del(parm); break;
    case 'g': err=list_genre(); break;
-   case 'i': err=rebuild_dbf_cache(); break;
+   case 'i': err=rebuild_dbf_cache(); break;    // DELETE imdb.fld before running this!
    case 'l': err=list_mytitle(); break;
    case 'm': err=missing_imdb_ratings(parm); break;
    case 'o': err=orphans(); break;
