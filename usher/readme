@@ -1,0 +1,25 @@
+curl 'https://www.omdbapi.com/?apikey=66e03abd&t="Six-String.Samurai"&y=1998' 2>/dev/null
+
+FAILS! get rid of double quotes!
+=========================================
+
+
+NOW fix on-screen usher showing url-compliant name - s/b the name returned by omdb API 
+
+
+curl 'https://www.omdbapi.com/?apikey=66e03abd&t=The.Legend.of.Curly%27s.Gold&y=1994' 2>/dev/null
+ABOVE WORKS!
+
+curl 'https://www.omdbapi.com/?apikey=66e03abd&t=City.Slickers.II.The.Legend.of.Curly%27s.Gold&y=1994' 2>/dev/null
+ABOVE WORKS!
+ 
+curl 'https://www.omdbapi.com/?apikey=66e03abd&t=City%20Slickers%20II:The%20Legend%20of%20Curly%27s%20Gold&y=1994' 2>/dev/null
+ABOVE WORKS!
+
+
+APOSTOPHIZER seems to replace ' with '\'' in get() returned titles
+
+USHER
+DON'T change GWinam (top) foldername from red to blue after clicking on "identify".
+DO show GWunam (middle) in green IF DIFFERENT to GWinam (excluding year)
+
