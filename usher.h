@@ -16,6 +16,7 @@ bool  tag_present(void);
 ~MVDIR();
 int   inp_state;  // 1=confirm ImdbNo, 2=Rename and/or add to dbf, 3=Update Rating
 bool  update_tags_do_it=false;
+void  check_GWunam(void);
 OMZ omz;
 private:
 void	update_om2(bool set_watch_history);
@@ -33,14 +34,14 @@ char	*Foldername;	// ptr -> BaseName (within Path) of the current folder, which 
 char  *tooltip_text=0;
 char  vidext[4];  /// ".mkv" or whatever. INCLUDES the dot, but NOT EOS nullbyte
 DIRTBL   *dt;		// Table of (unpathed) FILENAMES found in the FOLDER passed to constructor
-int64_t biggest_vid_sz;
+//int64_t biggest_vid_sz;
 char biggest_vid_fn[256];
 WATCH_HISTORY wh={0,0};
 };
 
 int process_cli_flag(const char *parm);   // (in usherx.cpp) Special CLI processing / maintenance facilities
 
-char *fmt_name_year(char *s, OMZ *oz);	         // (in usher.cpp)
+char *fmt_name_year(char *s, OMZ *oz, bool escape_ampersand=false);	  // (in usher.cpp) bool TRUE = gtk display  
 bool api_name_from_number(OMZ *zz);	            // (in usher.cpp)
 void retrieve_api_title(OMZ *zz, char *buf);	   // (in usher.cpp)
 void set_cursor(bool busy);	                  // (in usher.cpp)

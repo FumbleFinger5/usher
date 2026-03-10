@@ -15,7 +15,6 @@
 #include "str.h"
 #include "memgive.h"
 #include "parm.h"
-#include "smdb.h"
 #include "omdb1.h"
 #include "flopen.h"
 #include "drinfo.h"
@@ -31,11 +30,44 @@
 
 #include "usher.h"
 
+static int check_ascii(const char *p)
+{
+bool pause=false;
+int32_t imno = str2imno(p);
+char str[256];
+int i;
+bool again=false, chg;
+OM1_KEY k;
+OMDB1 om(true);
+IMDB_API ia;
+int ct=0;
+while (om.scan_all(&k,&again))
+	{
+   if (imno!=0) pause = (k.imno==imno);
+	char *inam=strcpy(str,ia.get(k.imno,get_fld_name(FID_TITLE)));     // FID_TITLE FID_CAST
+   char output[128];
+if (pause)
+i=99;         // set break point to THIS LINE for debugger to see context before conversion
+//    convert_to_plain_ascii_char(inam, output, sizeof(output));
+//   ret=myconv(inam, output);
+   chg=uxlt(strcpy(output,inam));
+   if (!chg && pause==0) continue;
+   printf("UTF-8 error %s\n%s   tt%07d\n\n",inam,output,k.imno);
+   sjhlog("UTF-8 error %s\n%s   tt%07d",inam,output,k.imno);
+   ct++;
+   if (ct>3) break;     // report a maximum of 4 conversion failures
+	}
+if (ct>0) printf("%d utf-8 encoded title (or cast) errors logged\n",ct);
+return(0);	// No error
+}
+
+
+
 
 static char *str_unquote(char *s)
 {
 int len=strlen(s);
-if (len>=2 && s[0]==CHR_QTDOUBLE && s[len-1]==CHR_QTDOUBLE)
+if (len>=2 && s[0]==QTDOUBLE && s[len-1]==QTDOUBLE)
 	{s[len-1]=0; strdel(s,1);}
 return(s);
 }
@@ -43,8 +75,8 @@ return(s);
 static char *str_quote_if_commas(char *s)
 {
 if (stridxc(COMMA,s)==NOTFND) return(str_unquote(s));
-strendfmt(s,"%c",CHR_QTDOUBLE);
-strinsc(s,CHR_QTDOUBLE);
+strendfmt(s,"%c",QTDOUBLE);
+strinsc(s,QTDOUBLE);
 return(s);
 }
 
@@ -55,65 +87,6 @@ for (int i=1;s[i];i++)
 return(s);
 }
 
-// I THINK this was used to dummy up an IMDB "export" *.csv file for TMDB
-// - but IMDB is now being regularly updated using missing_imdb_ratings() - via flag "usher -m"
-//Const,Your Rating,Date Rated,Title,URL,Title Type,IMDb Rating,Runtime (mins),Year,Genres,Num Votes,Release Date,Directors
-//tt0100024,9,2016-03-28,Life Is Sweet,https://Www.imdb.com/title/tt0100024/,movie,7.4,103,1990,"Comedy, Drama",11025,1990-11-15,Mike Leigh
-static int xport(void)	// Update format of 'Watch History' subrecord within in Notes field
-{
-char str[256], s[128], imno[16];
-int ct=0;
-bool again=false;
-OM1_KEY k;
-OMDB1 om(true);
-SCAN_ALL ia;
-HDL f=flopen("/home/steve/Downloads/myratings.csv","w");
-flputln(strcpy(str,"Const,Your Rating,Date Rated,Title,URL,Title Type,"
-	"IMDb Rating,Runtime (mins),Year,Genres,Num Votes,Release Date,Directors"),f);
-//flputln(strcpy(str,"imdbID,Rating10,WatchedDate"),f);
-while (om.scan_all(&k,&again))
-	{
-int32_t ww=NO, want[]={3316948,1131729,100046,100140,100150,0};
-for (int w=0;!ww && want[w];w++) ww=(want[w]==k.imno);
-//if (!ww) continue;
-
-	strfmt(imno,"tt%07d",k.imno);
-//printf("%s\n",imno);
-	if (k.rating<10) continue;		// hkmsrda7
-	int rat=(k.rating+5)/10;
-	if (k.rating>=93) rat=10;
-	if (k.rating>=84 && k.rating<=89) rat=9;
-
-rat=(rating2tmdb(k.rating)+5)/10;
-
-	if (rat<1 || rat>10)
-		m_finish("%s duff rating!", imno);
-	if (k.seen==0) m_finish("%s duff date seen!",imno);
-	strfmt(str,"%s,%d",imno,rat);
-	calfmt(strend(str),",%4C-%02O-%02D",k.seen);
-	ia.get(k.imno,FID_TITLE,s);
-	strendfmt(str,",%s",str_quote_if_commas(s));
-	strendfmt(str,",https://www.imdb.com/title/tt%07d/,movie,5.5",k.imno);  // dummy up imdb XPORT *.csv
-	ia.get(k.imno,FID_RUNTIME,s);
-if ((ww=stridxc(':',s))==NOTFND) continue;
-int mm=(a2i(s,0)*60) + a2i(&s[ww+1],0);
-if (mm<60) continue; // ignore short movies 
-	strendfmt(str,",%d",mm);
-	ia.get(k.imno,FID_YEAR,s);
-	int yr=a2i(s,4);
-	strendfmt(str,",%s",s);
-	ia.get(k.imno,FID_GENRE,s);
-	strendfmt(str,",%s,12345",str_quote_if_commas(space_after_comma(s)));
-strendfmt(str,",%4d-01-01",yr);
-	ia.get(k.imno,FID_DIRECTOR,s);
-	strendfmt(str,",%s",str_quote_if_commas(s));
-	flputln(str,f);
-	ct++;
-	}
-printf("Exported %d ratings\n",ct);
-flclose(f);
-return(0);	// No error
-}
 
 struct KEYCT {char key[32]; short ct;};
 
@@ -191,14 +164,14 @@ return(0);	// No error
 static int add_missing_api_rec(int32_t imno)
 {
 OMDB1 om1(true);
-OMZ omz;
-if (!om1.get_om1(imno,&omz.k))
+OMZ oz;
+if (!om1.get_om1(imno,&oz.k))
    {
    printf("IMDB Number not in library!\n");
    return(1);
    }
 printf("tt%07d added missing API data to imdb.api and imdb.fld\n", imno);
-update_api_both(&omz);
+update_api_both(&oz);
 return(NO); // No error
 }
 
@@ -206,7 +179,7 @@ static int view(const char *p)
 {
 if (!p[0]) return(view_all_json_keys());
 if (SAME2BYTES(p,"k")) return(list_missing_keys());
-int32_t imno = tt_number_from_str(p);
+int32_t imno = str2imno(p);
 const char *str;
    {                    // these brackets are just so database is closed before possible add_missing_api_rec() call
    IMDB_API ia;
@@ -234,7 +207,7 @@ strfmt(wrk, "Record counts - %s:%d",Basename(ia.filename()),du->ct);
 printf("%s  %s:%d\n",wrk,Basename(sjh.filename()),dq->ct);
 printf("Movies in %s but not %s...\n",ia.filename(),Basename(sjh.filename()));
 for (i=0;i<du->ct;i++)
-    if (in_table(&j,du->get(i),dq->get(0),dq->ct,sizeof(int32_t),cp_int32_t)==NOTFND)
+    if (in_table(&j,du->get(i),dq->get(0),dq->ct,sizeof(int32_t),cp_long)==NOTFND)
         {
         int32_t imno=*(int32_t*)(du->get(i));
         strcpy(wrk,ia.get(imno,"Title"));
@@ -243,7 +216,7 @@ for (i=0;i<du->ct;i++)
         }
 printf("Movies in %s but not %s...\n",sjh.filename(),Basename(ia.filename()));
 for (i=0;i<dq->ct;i++)
-    if (in_table(&j,dq->get(i),du->get(0),du->ct,sizeof(int32_t),cp_int32_t)==NOTFND)
+    if (in_table(&j,dq->get(i),du->get(0),du->ct,sizeof(int32_t),cp_long)==NOTFND)
         {
         int32_t imno=*(int32_t*)(dq->get(i));
         sjh.get_om1(imno,&om1);
@@ -276,15 +249,17 @@ dst->put(name,value);
 static void add_api_rating(int32_t imno, JBLOB_READER *jb)
 {
 char buf8k[8192];
-OMZ omz;
-omz.k.imno=imno;
-bool ok=tmdb_all_from_number(&omz, buf8k);
+OMZ oz;
+oz.k.imno=imno;
+bool ok=tmdb_all_from_number(&oz, buf8k);
 if (!ok) m_finish("tmdb_all_from_number FAIL imno:%d",imno);
 JBLOB_READER jb1(buf8k);
 copyjb(jb,&jb1,"imdbRating");
 copyjb(jb,&jb1,"imdbVotes");
 }
 
+// Update no more than 900 in one pass refreshing "cached api results" records in imdb.api
+// ...for some hard-coded specific metric that might not be in all records (currently "imdbRating")
 static int update_api_cache(void)
 {
 IMDB_API ia;
@@ -342,7 +317,7 @@ return(0);	// No error
 }
 
 
-static int rebuild_dbf_cache(void)
+static int rebuild_dbf_cache(void)  // rebuild imdb.fld optimised cache of MY data fields (not API fields)
 {
 printf("Updating imdb.dbf...\r\n");
 IMDB_API ia;
@@ -428,7 +403,7 @@ static char *makeline(char *str, MIR *m, bool hi)
    hi?"\033[1;37m":"",rating2imdb(m->rating_sjh),hi?"\033[0m":"",m->title,m->year));}
 static int missing_imdb_ratings(const char *p)
 {
-int32_t done_up_to = tt_number_from_str(p), i, ch;
+int32_t done_up_to = str2imno(p), i, ch;
 char str[256];
 DYNTBL *t=missing_imdb_ratings1();
 printf("%d listed ratings not in IMDB\nPress <Esc> to quit, any other key to visit IMDB and update rating\n",t->ct);
@@ -483,7 +458,7 @@ return(bd);
 
 static int fix_added(const char *pp)	// if added=0 set to watched date
 {
-int32_t imno=tt_number_from_str(pp), bd;
+int32_t imno=str2imno(pp), bd;
 if (imno<9999 || a2err_char!=COMMA || (bd=get_bd(&pp[stridxc(COMMA,pp)+1]))==0)
 	m_finish("Bad 'Date Added' parameter - expected -a[imno],YYYY-MM-DD");
 OM1_KEY k;
@@ -499,61 +474,44 @@ return(0);	// No error
 
 static int size_check(void)   // one-off update to smdb.mst::foldersize where moovie.dbf has since indexed a BIGGER copy
 {
-int i;
-DYNTBL tbl_smdb(sizeof(IMSZ),cp_int32_t);
-IMSZ im, *_im;
-SMDB s;
-EMKi eki;
-bool again=false;
-while (s.scan_all(&eki,&again))
-   {
-   im.imno=eki.imno;
-   im.sz=eki.e.sz;
-   _im=(IMSZ*)tbl_smdb.find(&im);
-   if (_im==NULL) tbl_smdb.put(&im);
-   else if (im.sz > _im->sz) _im->sz=im.sz;
-   }
-
-DYNTBL tbl_mvdb(sizeof(IMSZ),cp_int32_t);
+int i, j;
+DYNTBL timsz(sizeof(IMSZ),cp_long);
+IMSZ im, *_im, *tim;
 MVDB mvdb;
+OMDB1 om(true);
+OM1_KEY omk;
 BL_CARGO blc;
-for (blc.number=0; mvdb.get(BK_GE, &blc, NULL); blc.number++)
+for (blc.number=0; mvdb.get(BK_GE,&blc,NULL); blc.number++)
    {
-   DYNTBL tbl1(sizeof(IMSZ), cp_int32_t);    // all IMSZ records for THIS FilmsNN number
-   if (!mvdb.get(BK_EQ, &blc, &tbl1)) m_finish("impossible!!");
-   _im=(IMSZ*)tbl1.get(0);
-   for (i=tbl1.ct; i--;_im++)
+   DYNTBL imsz(sizeof(IMSZ),cp_long);                 // table of all imno's on this disk number
+   if (!mvdb.get(BK_EQ,&blc,&imsz)) m_finish("bums!");
+   for (_im=(IMSZ*)imsz.get(i=0);i++<imsz.ct;_im++)
       {
-      IMSZ *got=(IMSZ*)tbl_mvdb.find(_im);
-      if (got==NULL) tbl_mvdb.put(_im);
-      else if (_im->sz > got->sz) got->sz=_im->sz;
+      j=timsz.in_or_add(_im);
+      tim=(IMSZ*)timsz.get(j);
+      if (_im->sz > tim->sz) _im->sz=tim->sz;
       }
    }
-
-OM1_KEY k;
-OMDB1 om1(true);
-sjhlog("Number of imno's  -  smdb.dbf:%d  mvdb.dbf:%d  smdb.mst:%d",tbl_smdb.ct,tbl_mvdb.ct, om1.recct());
-for (k.imno=0; om1.get_ge(&k); k.imno++)
+for (omk.imno=0; om.get_ge(&omk); omk.imno++)
    {
-   _im=(IMSZ*)tbl_mvdb.find(&k.imno);
-   if (_im==NULL)
+   _im=(IMSZ*)timsz.find(&omk.imno);
+   if (_im==NULL) {continue;}
+   ushort prv_sz=omk.sz;
+   omk.sz=_im->sz /100000000;	// (100M) stores foldersize in "tenths of a Gb"
+   if (omk.sz != prv_sz)
       {
-      _im=(IMSZ*)tbl_smdb.find(&k.imno);
-      if (_im!=NULL) sjhlog("tt%07d in smdb.dbf but not mvdb",k.imno);  // (none were ever found!)
+      if (!om.upd(&omk)) m_finish("Error2 updating filesize");
+      char wrk[32];
+      strfmt(wrk,"%1.1f",0.1*omk.sz);
+      SJHLOG("tt%07d size:%s updated",omk.imno,wrk);
       }
-   ushort prv_sz=k.sz;
-   if (_im!=NULL && (k.sz=_im->sz/100000000) > prv_sz)
-      if (!om1.upd(&k)) m_finish("Error2 updating filesize");
-      else sjhlog("tt%07d size:%s updated",k.imno,str_size64(((int64_t)100000000) * k.sz));
-      
    }
-return(0);	// No error
+return(0);
 }
 
-
-static int del(const char *parm)
+static int delete_imno(const char *parm)
 {
-int32_t deli = tt_number_from_str(parm);
+int32_t deli = str2imno(parm);
 OMDB1 om1(true);
 const char *fn=om1.filename();
 if (om1.del(deli)) printf("\nDeleted imno:%d from %s\n",deli,fn);
@@ -571,35 +529,75 @@ else printf("\nFailed to delete imno:%d from %s\n",deli,fn);
 return(0);
 }
 
+static int update_title_all_utf8(void)
+{
+int i, ct;
+printf("Press y to convert all UTF-8 titles in imdb.api to Ascii\n");
+do i=keypress_waiting(); while (i!='y');
+printf("\nUpdating...\n");
+IMDB_API ia;
+DYNAG *im=ia.get_tbl();
+int32_t *imno=(int32_t*)(im->get(0));
+for (i=ct=0;i<im->ct;i++)
+   {
+   const char *ttl=ia.get(imno[i],get_fld_name(FID_TITLE));
+   if (ttl==NULL) m_finish("no api title!");
+   char new_ttl[80];
+//   myconv(ttl,new_ttl);
+//   if (strcmp(ttl,new_ttl))
+   if (uxlt(strcpy(new_ttl,ttl)))  // IF UTF8 transliterator "normalised" any "extended" characters to plain Ascii
+      {
+      printf("tt%07d\n%s\n%s\n\n", imno[i],ttl,new_ttl);
+      const char *buf=ia.get(imno[i],NULL);
+      JBLOB_READER jb(buf);
+      jb.put(get_fld_name(FID_TITLE),new_ttl);
+      ia.put(imno[i],jb.get(NULL));
+      ct++;
+      }
+   }
+printf("%d UTF-8 titles reduced to Ascii\n",ct);
+return(0);
+}
+
 static int update_title(const char *p)
 {
-int32_t imno = tt_number_from_str(p);
-char old_ttl[80], new_ttl[80];
+int32_t imno = str2imno(p);
+char mst_ttl[80], new_ttl[80], api_ttl[80];
 int len;
+if (imno==0) return(update_title_all_utf8());
 printf("IMDB Number:tt%07d\n",imno);
 	{
-	SCAN_ALL sa;
-	sa.get(imno,FID_TITLE,old_ttl);
+	OMDB1 om1(true);
+	OM1_KEY k;
+	if (!om1.get_om1(imno,&k)) m_finish("imdb number not in main smdb.mst database");
+   if (k.mytitle==0) strcpy(mst_ttl,"(No title override)");
+	else om1.rh2str(k.mytitle,mst_ttl);
 	}
-printf("Old title:%s\n",old_ttl);
+	{
+	IMDB_API ia;
+	strcpy(api_ttl,ia.get(imno,"Title"));
+	}
+printf("MST title:%s\n",mst_ttl);
+printf("API title:%s\n",api_ttl);
 printf("New title:");
 fgets(new_ttl, 64, stdin);
 printf("\n");
 len=strlen(new_ttl);
 if (len>0 && new_ttl[len-1]=='\n') new_ttl[--len]=0; // Should always end in (unwanted) newline
-if (len==0 || len>60)
+if (len==0) return(0);     // do nothing
+int year_override=0;
+if (new_ttl[len-1]==')' && new_ttl[len-6]=='(')
+   if (valid_movie_year(year_override=a2i(&new_ttl[len-5],4))) new_ttl[len-7]=0;
+   else m_finish("Bad year override");
+strtrim(new_ttl);
+if (len>63)
    m_finish("Bad title");
 	{
 	IMDB_FLD imf;
 	if (!imf.upd_title(imno, new_ttl)) m_finish("Title update failed");
 	}
-char api_ttl[80];
 	{
-	IMDB_API ia;
-	strcpy(api_ttl,ia.get(imno,"Title"));
-	}
-bool ok=false;
-	{
+   bool ok=false;
 	OMDB1 om1(true);
 	OM1_KEY k;
 	if (!om1.get_om1(imno,&k)) m_finish("this cant happen!");
@@ -607,10 +605,21 @@ bool ok=false;
 		ok=om1.upd_title(imno,new_ttl);
 	else
 		ok=om1.upd_title(imno,NULL);
+   if (!ok) m_finish("om1.upd failed!");
 	}
-if (ok) printf("Title updated\n");
-else {sjhlog("baffled"); printf("###baffled###\n");}
-return(ok);
+
+if (year_override)
+   {
+   IMDB_API ia;
+   JBLOB_READER jb(ia.get(imno,0));
+   char wrk[16];
+   jb.put("Year",strfmt(wrk,"%d",year_override));
+   ia.put(imno,jb.get(NULL));
+   printf("\nDelete imdb.fld and rebuild with 'usher -i' after YEAR update\n\n");
+   }
+
+printf("Title %supdated\n", (year_override==0)?"":"and Year ");
+return(0);  // means 'ok'
 }
 
 static int backup(void)
@@ -618,6 +627,34 @@ static int backup(void)
 OMDB1 om1(true);
 om1.backup();
 return(0);
+}
+
+// manage <name>+<value> entries for ad-hoc variables stored in notes
+// If no <value> specified after '=' delete any existing setting for <name>
+static int notes_name_value(const char *p)
+{
+bool ok=true;
+int imno=str2imno(p);
+if (imno<1000 || a2err_char!=COMMA) ok=false;
+const char *f=p+stridxc(COMMA,p)+1;           // point to start of fieldname after the comma
+int flen=stridxc('=',f);
+char wrk[64];
+if (!ok || flen<2) m_finish("Expected ',<name>=<value>' after imno");
+memmove(wrk,f,flen);
+wrk[flen]=0;
+char value[64];
+strcpy(value,f+flen+1);
+OMDB1 om1(true);
+OM1_KEY k;
+if (!om1.get_om1(imno,&k)) m_finish("imno not in smdb.mst");
+USRTXT ut(imno);
+DYNAG *d=ut.extract(wrk);	// get table of any existing {<name>=...} subrec(s) in notes
+while (d->ct) d->del(0);   // delete any existing setting (NOT for 'prv', which can have multiple entries)
+if (*value) d->in_or_add(value);
+ut.insert(d);
+printf("\nIMNO tt%07d  %s set to [%s]\n\n",imno, (char*)d->cargo(NULL), value);
+delete d;
+return(0);  // no error
 }
 
 int process_cli_flag(const char *parm)
@@ -629,19 +666,22 @@ switch (subx)
 	{
 	case 'a': err=(fix_added(parm)); break;
    case 'b': err=backup(); break;
-   case 'd': err=del(parm); break;
+   case 'c': err=check_ascii(parm); break;
+   case 'd': err=delete_imno(parm); break;
    case 'g': err=list_genre(); break;
    case 'i': err=rebuild_dbf_cache(); break;    // DELETE imdb.fld before running this!
    case 'l': err=list_mytitle(); break;
    case 'm': err=missing_imdb_ratings(parm); break;
+   case 'n': err=notes_name_value(parm); break;
    case 'o': err=orphans(); break;
    case 's': err=size_check(); break;
    case 't': err=update_title(parm); break;
    case 'u': err=update_api_cache(); break;
    case 'v': err=view(parm); break;
-   case 'x': err=xport(); break;
    default:  printf("\nBad flag %s\n",parm); err=99;
    }
 if (err==0) err=leak_tracker(NO); 
 return(err);
 }
+
+// extra line xxxxxZZZZPP

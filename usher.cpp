@@ -18,7 +18,7 @@
 #include "str.h"
 #include "memgive.h"
 #include "parm.h"
-#include "smdb.h"
+//#include "smdb.h"
 #include "omdb1.h"
 #include "flopen.h"
 #include "drinfo.h"
@@ -41,6 +41,7 @@ GtkWidget *window;
 GtkWidget *GWinum;	// IMDB number - only editable if didn't get it from *.nfo or _tt
 GtkWidget *GWinam;	// The "standard default" name of the movie as gotten by IMDB api
 GtkWidget *GWunam;	// User override MovieName (will be stored in _ttNNNNN) - IGNORED IF ALREADY IN DATABASE!
+					// GWunam doesn't usually include (YEAR), but it CAN be used to override tmdb mis-dating
 GtkWidget *GWSearchText;	// Foldername preceded by IMDB to use for Cut&Paste&Lookup
 GtkWidget *GWok;
 GtkWidget *GWscale;
@@ -51,6 +52,7 @@ GtkWidget *GWwatchLabel;	// Label above "Partwatch" spin control RED if non-zero
 GtkWidget *GWSearch;	// copy contents of GWSearchText into clipboard to paste into browser search
 GtkWidget *GWprv;		// label showing previous WatchDate + Rating if present, else blank
 GtkWidget *GWtags;	// Checkbox for "Update metadata Title & Publisher tags"
+GtkWidget *GWNotes;	// Button to open "Edit Notes" dialog box
 
 void set_cursor(bool busy)
 {
@@ -105,12 +107,17 @@ if (!get_session_gui(session_id)) return(false);
 return(save_new_session(session_id));
 }
 
-char *fmt_name_year(char *s, OMZ *oz)
+char *fmt_name_year(char *s, OMZ *oz, bool escape_ampersand)
 {
 *s=0;
 if (oz->year)
     strfmt(s,"%s (%d)",oz->title,oz->year);
-else crash("fuck");
+else
+   crash("fuck");
+if (escape_ampersand)
+   for (; *s; s++)
+      if (*s=='&' && !SAME4BYTES(&s[1],"amp;"))
+         strins(&s[1],"amp;");
 return(s);
 }
 
@@ -118,7 +125,7 @@ static void show_inam(const char *colour)
 {
 char w[256];
 strfmt(w,"<span foreground=\"%s\" size=\"x-large\" background=\"white\">", colour);
-fmt_name_year(strend(w), &mv->omz);	// Allow ampersand		// was Usr
+fmt_name_year(strend(w), &mv->omz, true);	// THIS call is for gtk display, so escape any ampersands
 strcat(w,"</span>");
 gtk_label_set_markup(GTK_LABEL(GWinam), (const gchar*) w);
 }
@@ -190,7 +197,7 @@ gtk_widget_set_visible(GWscale,show);
 activate_partwatch_if_wanted();
 }
 
-// Hide GWtags UNLESS inp_state==2 AND metadata "title" of biggest video file doesn't match _tt title+year
+// Hide GWtags UNLESS inp_state==2 AND metadata "title" of biggest video file doesn't match _tt Title+Year
 static void widget_init(void)
 {
 static bool inp_state_was_1=false;
@@ -215,7 +222,8 @@ if (mv->inp_state==1)	// Didn't get imno from _tt or *.nfo, so gtk_widget_hideus
 	}
 if (mv->inp_state==2) // - at least one file/folder needs renaming (and/or _ttNNNNN needs to be created) 		
 	{
-	if (!inp_state_was_1) show_inam("red");
+//	if (!inp_state_was_1) show_inam("red");
+	show_inam(inp_state_was_1?"red":"blue");
 	gtk_entry_set_text(GTK_ENTRY(GWinum), (const gchar*)strfmt(w,"tt%d",mv->omz.k.imno));
 	gtk_editable_set_editable((GtkEditable*)GWinum, FALSE);
 	gtk_button_set_label((GtkButton*)GWok, "Rename Files");
@@ -260,9 +268,23 @@ gtk_button_set_image(GTK_BUTTON(button), image);
 gboolean on_query_tooltip(GtkWidget *widget, gint x, gint y, gboolean keyboard_mode, GtkTooltip *tooltip, gpointer user_data)
 {
 static const char *txt=0;
-if (txt==NULL) txt=mv->get_tooltip_text();
-if (txt==NULL) return(false);
-gtk_tooltip_set_text(tooltip, txt);
+if (widget==GWinam)
+	{
+	if (txt==NULL) txt=mv->get_tooltip_text();
+	if (txt==NULL) return(false);
+	gtk_tooltip_set_text(tooltip, txt);
+	}
+else
+	{
+	OMDB1 om1(true);
+	OM1_KEY k;
+	bool got=om1.get_om1(k.imno=mv->omz.k.imno,&k);
+	if (!got) return(false);
+	std::string sstr=om1.get_notes(k.imno);
+	const char *cstr=sstr.c_str();
+	if (cstr==NULL || *cstr==0) return(false);
+	gtk_tooltip_set_text(tooltip, sstr.c_str());
+	}
 return true;
 }
 
@@ -292,15 +314,17 @@ GWPartWatched = GTK_WIDGET(gtk_builder_get_object(builder, "GWPartWatched"));
 GWadj2 = GTK_ADJUSTMENT(gtk_builder_get_object(builder, "GWadj2"));
 GWwatchLabel = GTK_WIDGET(gtk_builder_get_object(builder, "GWwatchLabel"));
 GWtags = GTK_WIDGET(gtk_builder_get_object(builder, "GWtags"));
+GWNotes = GTK_WIDGET(gtk_builder_get_object(builder, "GWNotes"));
 
 strcpy(we,"/lens.png");
 GWSearch = GTK_WIDGET(gtk_builder_get_object(builder, "GWSearch"));
 set_button_image(GWSearch, exe_path, 25, 25); // Adjust width and height as needed
 show_unam_css();
-
 gtk_widget_set_has_tooltip(GWinam, TRUE);
 g_signal_connect(GWinam, "query-tooltip", G_CALLBACK(on_query_tooltip), NULL);
-
+gtk_widget_set_has_tooltip(GWNotes, TRUE);
+g_signal_connect(GWNotes, "query-tooltip", G_CALLBACK(on_query_tooltip), NULL);
+ 
 // - should call valid_folder() here, not in the original main()
 mv=new MVDIR(argv[1]);        // HERE is where we should chdir into the specified folder
 
@@ -347,26 +371,32 @@ if (stat(path,&sb)) return(-500);	// some kind of error (copied to system global
 return(NO);	// No error
 }
 
-static bool is_mount(char *p)
-{
-PATHDYNAG pd(p);
-return(pd.is_mount());
-}
-
 static int console_test(const char *p1, const char *p2);       // pre-declare
+
+static int test(const char *fn)
+{
+int64_t bytes=dr_foldersize(fn);
+short szA=bytes/100000000;
+int szB=(((bytes>>20)) + 5)/10;
+char wrkA[64], wrkB[64];
+strfmt(wrkA,"%1.1f",0.1*szA);
+strfmt(wrkB,"%1.1f",0.1*szB);
+printf("bytes:%s A:%s B:%s\n",str_size64(bytes),wrkA,wrkB);
+return(0);
+}
 
 int main(int argc, char *argv[])
 {
+//return(test("/media/steve/03Magnum/Films03/Fruitvale Station (2013)"));
 int err=0;
 if (argc==3) return(console_test(argv[1], argv[2]));
-//test();return(0);
 if (argc==2)
 	{
 	char *p=argv[1];
 	if (SAME2BYTES(p,"--")) p++;
 	if (p[0]=='-') return(process_cli_flag(&p[1]));
 	}
-if (argc==2 && !is_mount(argv[1])) crash("Path not mounted [%s]",argv[1]);
+//if (argc==2 && !is_mount(argv[1])) crash("Path not mounted [%s]",argv[1]);  // 24/07/25  - Why is this here????
 try
 	{
 //      leak_tracker(YES);
@@ -387,30 +417,36 @@ return(err);
 }
 
 // If OMZ.title not set, get it from the passed api-returned json buffer
-void retrieve_api_title(OMZ *zz, char *buf8k)
+void retrieve_api_title(OMZ *oz, char *buf8k)
 {
 JBLOB_READER jb(buf8k);
 const char *ptr=jb.get("Title");
-strncpy(zz->title,ptr,sizeof(zz->title));
-str_slash2dash(zz->title);
-ptr=jb.get("Released");
-int len=strlen(ptr);
-if (len>=4) ptr+=(len-4); else ptr=jb.get("Year");
-zz->year=a2i(ptr,4);
+strncpy(oz->title,ptr,sizeof(oz->title));
+if (!valid_movie_year(oz->year))	// 04/01/26 trying to fix Super Troopers 2001 as well as Rats 2024
+   {
+   ptr=jb.get("Released");
+   int len=strlen(ptr);
+   if (len>=4) ptr+=(len-4); else ptr=jb.get("Year");
+   if (oz->title[0] && ISDIGIT(ptr[0]))
+   oz->year=a2i(ptr,4);
+   }
 }
 
 // Use API with ImdbNo for title + Year - called by read_nfo(MV.e) AND on_GWok_clicked(eEe)
-bool api_name_from_number(OMZ *zz)
+bool api_name_from_number(OMZ *oz)
 {
 char buf8k[8192]; // Allow PLENTY of space for the ibmdb API call
-if (zz->k.imno==0) return(false);         // added 6/1/25 - avoid "bad tmno" when there's no chance of finding it
-if (!tmdb_all_from_number(zz,buf8k))
+if (oz->k.imno==0) m_finish("impossible 301225");         // added 6/1/25 - avoid "bad tmno" when there's no chance of finding it
+if (!tmdb_all_from_number(oz,buf8k))
 	return(false);
-retrieve_api_title(zz,buf8k);
-return(*zz->title!=0 && valid_movie_year(zz->year));    // ok - imdb number is valid - EM_KEY name+Year filled in
+
+if (oz->title[0]==0 || oz->year==0)		// Added 24/11/25 for "Rats!"
+	retrieve_api_title(oz,buf8k);
+str_slash2dash(oz->title);
+return(*oz->title!=0 && valid_movie_year(oz->year));    // ok - imdb number is valid - EM_KEY name+Year filled in
 }
 
-
+ 
 extern "C"
 void  on_GWok_clicked(GtkButton *b)			// HERE is the on click Ok routine
 {
@@ -422,18 +458,18 @@ if (mv->inp_state==3)
 	gtk_window_close((GtkWindow*)window);
 	return;
 	}
+mv->check_GWunam();	//  Added 22/11/25 for "Rats 2024 1080p AMZN WEB-DL"
 if (mv->inp_state==1)	// need to confirm identity (auto- or user input imdb number)
 	{
    char w[32];	// 19/12/24 after disable on_GWinum_changed
    strcpy(w,gtk_editable_get_chars((GtkEditable*)GWinum,0,NOTFND));
-   mv->omz.k.imno=tt_number_from_str(w);
-   if (!mv->omz.k.imno) {MessageBox("Missing ImdbNO"); return;}
-	if (!api_name_from_number(&mv->omz)) {MessageBox("Invalid ImdbNO"); return;}
+   mv->omz.k.imno=str2imno(w);
+	if (mv->omz.k.imno==0 || !api_name_from_number(&mv->omz)) {MessageBox("Invalid ImdbNO"); return;}
 	mv->inp_state=2;
 	}
 else						// Must be (mv->inp_state==2)	// (we know some renaming is required)
 	{
-	mv->rename(true);
+	mv->rename(true); 
 	mv->inp_state=3;
 
 	static guint timeout_id = 0;
@@ -455,11 +491,11 @@ void  on_GWinum_changed(GtkEditable *editable)
 char w[32];
 strcpy(w,gtk_editable_get_chars(editable,0,NOTFND));
 int prv=mv->omz.k.imno;		// 14/12/24 re-validate changed _tt (don't know if needed)
-mv->omz.k.imno=tt_number_from_str(w);
+mv->omz.k.imno=str2imno(w);
 if (mv->omz.k.imno!=prv)
 	{
 	mv->inp_state=1;
-	if (!api_name_from_number(&mv->omz))
+	if (mv->omz.k.imno==0 || !api_name_from_number(&mv->omz))
       MessageBox("Invalid ImdbNO"); 
    else
       w[30]=0;
@@ -487,12 +523,40 @@ extern "C"
 void on_GWSearch_clicked(void)
 {
 const char *txt;
-//GtkClipboard *clipboard;    // don't actually need gtk clipboard
 txt = gtk_label_get_text(GTK_LABEL(GWSearchText));        // string created by program from filename (NOT user input)
-//clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-//gtk_clipboard_set_text(clipboard, txt, -1);
-//sjhlog("Search[%s]",txt);
 google_search(txt);
+}
+
+extern "C" void on_GWNotes_clicked(GtkButton *button, gpointer user_data)
+{
+GtkWidget *dialog = gtk_dialog_new_with_buttons("Notes", GTK_WINDOW(gtk_widget_get_toplevel(GTK_WIDGET(button))),
+    (GtkDialogFlags)(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
+	"Cancel", GTK_RESPONSE_CANCEL, "Save", GTK_RESPONSE_ACCEPT, NULL);
+GtkWidget *textview = gtk_text_view_new();
+GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textview));
+GtkWidget *scrolled_window = gtk_scrolled_window_new(NULL, NULL);
+gtk_container_add(GTK_CONTAINER(scrolled_window), textview);
+gtk_widget_set_size_request(scrolled_window, 400, 300);
+
+USRTXT ut(mv->omz.k.imno);		// Opens omdb.mst and reads any user notes record
+std::string txt = ut.get();
+gtk_text_buffer_set_text(buffer, txt.c_str(), -1);
+
+GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+gtk_box_pack_start(GTK_BOX(content_area), scrolled_window, TRUE, TRUE, 0);
+gtk_widget_show_all(dialog);
+
+gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+if (response == GTK_RESPONSE_ACCEPT)
+	{
+    GtkTextIter start, end;
+    gtk_text_buffer_get_start_iter(buffer, &start);
+    gtk_text_buffer_get_end_iter(buffer, &end);
+    char *new_text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+    ut.put(new_text);
+    g_free(new_text);
+	}
+gtk_widget_destroy(dialog);
 }
 
 extern "C"
@@ -507,14 +571,13 @@ static int console_test(const char *p1, const char *p2)  // Do we actually need 
 if (!SAME2BYTES(p1,"-c")) m_finish("Bad parameters");
 p1+=2;
 int imno=0;
-if (*p1!=0 && (imno=tt_number_from_str(p1))==0) m_finish("Bad console test imno");
+if (*p1!=0 && (imno=str2imno(p1))==0) m_finish("Bad console test imno");
 MVDIR mv(p2);
 mv.update_tags_do_it=true;
 if (mv.inp_state==1)
 	{
-   if (imno==0) m_finish("imno needed");
    mv.omz.k.imno=imno;
-	if (!api_name_from_number(&mv.omz)) m_finish("imno NEEDED!");
+	if (imno==0 || !api_name_from_number(&mv.omz)) m_finish("imno NEEDED!");
 	mv.inp_state=2;
 	}
 if (mv.inp_state!=2) m_finish("console test no rename needed");

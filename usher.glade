@@ -171,7 +171,7 @@
             <property name="height-request">36</property>
             <property name="visible">True</property>
             <property name="can-focus">True</property>
-            <property name="placeholder-text" translatable="yes">Override movie name (NOT including Year)</property>
+            <property name="placeholder-text" translatable="yes">Override movie name (NOT normally including Year)</property>
           </object>
           <packing>
             <property name="x">36</property>
@@ -188,6 +188,21 @@
           <packing>
             <property name="x">255</property>
             <property name="y">258</property>
+          </packing>
+        </child>
+        <child>
+          <object class="GtkButton" id="GWNotes">
+            <property name="label" translatable="yes">Notes</property>
+            <property name="width-request">30</property>
+            <property name="height-request">30</property>
+            <property name="visible">True</property>
+            <property name="can-focus">True</property>
+            <property name="receives-default">True</property>
+            <signal name="clicked" handler="on_GWNotes_clicked" swapped="no"/>
+          </object>
+          <packing>
+            <property name="x">288</property>
+            <property name="y">285</property>
           </packing>
         </child>
       </object>
